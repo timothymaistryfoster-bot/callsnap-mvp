@@ -17,6 +17,11 @@ type SummaryPayload = {
   clientRecap: string;
 };
 
+type ModelsUsed = {
+  transcribe: string;
+  summary: string;
+};
+
 type ApiResult = {
   fileName: string;
   durationSeconds: number | null;
@@ -25,8 +30,12 @@ type ApiResult = {
   transcriptWasTruncated: boolean;
   transcriptCharacterCount: number;
   remainingRequestsThisHour: number;
+  cheapModeEnabled?: boolean;
+  modelsUsed?: ModelsUsed;
   summary: SummaryPayload;
 };
+
+const IS_PROD = process.env.NODE_ENV === "production";
 
 function fmtDuration(s: number | null) {
   if (!s) return null;
@@ -288,6 +297,21 @@ export default function Home() {
           <p className="small">
             Requests remaining this hour: <strong>{result.remainingRequestsThisHour}</strong>
           </p>
+
+          {!IS_PROD && result.modelsUsed ? (
+            <div
+              className="small"
+              style={{
+                padding: "10px 12px",
+                borderRadius: 10,
+                background: "rgba(238,242,255,0.85)",
+                border: "1px solid rgba(79,70,229,0.2)",
+                color: "#374151"
+              }}
+            >
+              <strong>Internal debug:</strong> cheap mode {result.cheapModeEnabled ? "ON" : "OFF"} · transcribe model {result.modelsUsed.transcribe} · summary model {result.modelsUsed.summary}
+            </div>
+          ) : null}
         </section>
       )}
 

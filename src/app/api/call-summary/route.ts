@@ -3,11 +3,21 @@ import { NextRequest, NextResponse } from "next/server";
 export const runtime = "nodejs";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || "whisper-1";
-const SUMMARY_MODEL = process.env.OPENAI_SUMMARY_MODEL || "gpt-4.1-mini";
+const OPENAI_CHEAP_MODE = (process.env.OPENAI_CHEAP_MODE || "true").toLowerCase() !== "false";
+const OPENAI_CHEAP_TRANSCRIBE_MODEL = process.env.OPENAI_CHEAP_TRANSCRIBE_MODEL || "whisper-1";
+const OPENAI_CHEAP_SUMMARY_MODEL = process.env.OPENAI_CHEAP_SUMMARY_MODEL || "gpt-4.1-mini";
+const TRANSCRIBE_MODEL = OPENAI_CHEAP_MODE
+  ? OPENAI_CHEAP_TRANSCRIBE_MODEL
+  : process.env.OPENAI_TRANSCRIBE_MODEL || "whisper-1";
+const SUMMARY_MODEL = OPENAI_CHEAP_MODE
+  ? OPENAI_CHEAP_SUMMARY_MODEL
+  : process.env.OPENAI_SUMMARY_MODEL || "gpt-4.1-mini";
+const MAX_SUMMARY_OUTPUT_TOKENS = Number(process.env.MAX_SUMMARY_OUTPUT_TOKENS || "700");
 const MAX_AUDIO_FILE_MB = Number(process.env.MAX_AUDIO_FILE_MB || "20");
 const MAX_TRANSCRIPT_CHARS = Number(process.env.MAX_TRANSCRIPT_CHARS || "45000");
 const RATE_LIMIT_PER_HOUR = Number(process.env.CALL_SUMMARY_RATE_LIMIT_PER_HOUR || "15");
+const AUTO_STOP_ON_LARGE_TRANSCRIPT =
+  (process.env.AUTO_STOP_ON_LARGE_TRANSCRIPT || "true").toLowerCase() !== "false";
 
 type RateLimitEntry = { count: number; windowStart: number };
 
@@ -99,6 +109,7 @@ async function summarise(transcript: string): Promise<SummaryPayload> {
     body: JSON.stringify({
       model: SUMMARY_MODEL,
       temperature: 0.2,
+      max_completion_tokens: MAX_SUMMARY_OUTPUT_TOKENS,
       response_format: {
         type: "json_schema",
         json_schema: {
@@ -228,8 +239,23 @@ export async function POST(request: NextRequest) {
     }
 
     const { transcript, durationSeconds } = await transcribeAudio(audio);
-    const wasTruncated = transcript.length > MAX_TRANSCRIPT_CHARS;
-    const transcriptForSummary = wasTruncated ? transcript.slice(0, MAX_TRANSCRIPT_CHARS) : transcript;
+    const isTranscriptTooLarge = transcript.length > MAX_TRANSCRIPT_CHARS;
+
+    if (AUTO_STOP_ON_LARGE_TRANSCRIPT && isTranscriptTooLarge) {
+      return NextResponse.json(
+        {
+          error: "Call is too large for the current limit. Please upload a shorter recording.",
+          reason: "transcript_too_large",
+          transcriptCharacterCount: transcript.length,
+          maxTranscriptCharacters: MAX_TRANSCRIPT_CHARS
+        },
+        { status: 413 }
+      );
+    }
+
+    const transcriptForSummary = isTranscriptTooLarge
+      ? transcript.slice(0, MAX_TRANSCRIPT_CHARS)
+      : transcript;
     const summary = await summarise(transcriptForSummary);
 
     return NextResponse.json({
@@ -237,9 +263,14 @@ export async function POST(request: NextRequest) {
       durationSeconds,
       processingMs: Date.now() - startedAt,
       transcriptPreview: transcriptForSummary.slice(0, 1200),
-      transcriptWasTruncated: wasTruncated,
+      transcriptWasTruncated: isTranscriptTooLarge,
       transcriptCharacterCount: transcript.length,
       remainingRequestsThisHour: rate.remaining,
+      cheapModeEnabled: OPENAI_CHEAP_MODE,
+      modelsUsed: {
+        transcribe: TRANSCRIBE_MODEL,
+        summary: SUMMARY_MODEL
+      },
       summary,
     });
   } catch (err) {
